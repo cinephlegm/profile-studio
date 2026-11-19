@@ -1,10 +1,11 @@
 import ErrorBoundary from "@components/ErrorBoundary";
 import definePlugin from "@utils/types";
-import { Modal, openModal, UserStore, useEffect, useState } from "@webpack/common";
+import { Modal, openModal, RestAPI, UserStore, useEffect, useState } from "@webpack/common";
 
+import { executePlan, planApply, type Result } from "./apply";
 import { capture } from "./capture";
 import { captureField, fields, missing, parsePreset, Preset } from "./snapshot";
-import { changeLibrary, listPresets, recoverLibrary } from "./storage";
+import { changeLibrary, listPresets, loadRecovery, recoverLibrary, saveRecovery } from "./storage";
 import "./style.css";
 
 function downloadPreset(preset: Preset) {
@@ -16,6 +17,8 @@ function downloadPreset(preset: Preset) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+let applying = false;
+
 function ProfileLibrary() {
     const [list, setList] = useState<Preset[]>([]);
     const [selected, select] = useState("");
@@ -26,6 +29,8 @@ function ProfileLibrary() {
     const [editing, setEditing] = useState(false);
     const [busy, setBusy] = useState(false);
     const [message, setMessage] = useState("");
+    const [results, setResults] = useState<Result[]>([]);
+    const [pending, setPending] = useState<{ current: Preset; desired: Preset; restoring: boolean; plan: ReturnType<typeof planApply>; }>();
     const account = UserStore.getCurrentUser()?.id;
     const library = list.filter(preset => preset.account === account);
     const preset = library.find(item => item.id === selected) ?? library[0];
@@ -52,6 +57,48 @@ function ProfileLibrary() {
             setMessage(error instanceof Error ? error.message : "Profile Studio could not complete the operation.");
         } finally {
             setBusy(false);
+        }
+    }
+
+    async function prepare(restoring: boolean) {
+        setPending(undefined);
+        setResults([]);
+        await run(async () => {
+            const active = UserStore.getCurrentUser();
+            if (!active?.id) throw new Error("Sign in to Discord first.");
+            const desired = restoring ? await loadRecovery(active.id) : preset;
+            if (!desired) throw new Error(restoring ? "There is no previous profile to restore." : "Select a preset first.");
+            if (desired.account !== active.id) throw new Error("This preset belongs to another Discord account.");
+            const current = await capture("Previous profile");
+            const plan = planApply(current, desired, active.premiumType === 2);
+            setPending({ current, desired, restoring, plan });
+        }, "");
+    }
+
+    async function confirmApply() {
+        if (!pending || applying) return;
+        applying = true;
+        setPending(undefined);
+        try {
+            await run(async () => {
+                const { current, desired, restoring, plan } = pending;
+                const outcome = await executePlan(current, desired, plan, {
+                    currentAccount: () => UserStore.getCurrentUser()?.id,
+                    backup: snapshot => saveRecovery(snapshot, restoring),
+                    read: () => capture("Profile verification"),
+                    write: async ({ route, key, value }) => {
+                        if (UserStore.getCurrentUser()?.id !== desired.account) throw new Error("The active Discord account changed.");
+                        await RestAPI.patch({
+                            url: route === "account" ? "/users/@me" : "/users/@me/profile",
+                            body: { [key]: value },
+                            oldFormErrors: true,
+                        });
+                    },
+                });
+                setResults(outcome);
+            }, "Profile operation finished. See the results below.");
+        } finally {
+            applying = false;
         }
     }
     const chosenName = () => {
@@ -116,6 +163,8 @@ function ProfileLibrary() {
                 {library.map(item => <button key={item.id} aria-current={item.id === preset?.id ? "true" : undefined} disabled={busy} onClick={() => {
                     select(item.id);
                     setEditing(false);
+                    setPending(undefined);
+                    setResults([]);
                 }}>{item.name}</button>)}
             </nav>
             <div className="ps-main">
@@ -148,6 +197,7 @@ function ProfileLibrary() {
                     : entry.state}</dd></div>;
             })}</dl></details>
             <div className="ps-controls">
+                <button className="ps-primary" disabled={busy} onClick={() => void prepare(false)}>Apply Preset</button>
                 <button disabled={busy} onClick={() => void run(async () => {
                     await replace({ ...preset, name: chosenName(), updated: Date.now() });
                 }, "Renamed preset.")}>Rename</button>
@@ -198,6 +248,7 @@ function ProfileLibrary() {
             </div>
         </div>
         <div className="ps-controls ps-footer">
+            <button disabled={busy} onClick={() => void prepare(true)}>Restore Previous Profile</button>
             <label className="ps-import">Import preset <input type="file" accept=".json,application/json" disabled={busy} onChange={event => {
                 const file = event.target.files?.[0];
                 event.target.value = "";
@@ -214,7 +265,29 @@ function ProfileLibrary() {
                 if (window.confirm("Restore the previous local preset library?")) void run(recoverLibrary, "Recovered the previous library.");
             }}>Recover library</button>
         </div>
+        {pending && <section className="ps-apply-preview" aria-label="Review profile changes">
+            <h3>{pending.restoring ? "Restore previous profile" : `Apply ${pending.desired.name}`}</h3>
+            <p>{pending.plan.operations.length ? "These changes will be sent to Discord after you confirm." : "There are no supported changes to apply."}</p>
+            <dl className="ps-fields">{[
+                ...pending.plan.operations.map(({ field, value }) => ({
+                    field,
+                    status: value === null || value === "" ? "Clear"
+                        : typeof value === "string" && value.startsWith("data:image/") ? "Replace with saved image"
+                            : Array.isArray(value) ? value.map(hexColor).join(", ") : value,
+                })),
+                ...pending.plan.results,
+            ].map(({ field, status }) => <div key={field}><dt>{label(field)}</dt><dd>{status}</dd></div>)}</dl>
+            <div className="ps-controls">
+                {pending.plan.operations.length > 0 && <button className="ps-primary" disabled={busy} onClick={() => void confirmApply()}>
+                    {pending.restoring ? "Confirm Restore" : "Confirm Apply"}
+                </button>}
+                <button onClick={() => setPending(undefined)}>Close review</button>
+            </div>
+        </section>}
         <p className="ps-message" role="status">{message}</p>
+        {results.length > 0 && <details open><summary>Profile update results</summary><dl className="ps-fields">
+            {results.map(({ field, status }) => <div key={field}><dt>{label(field)}</dt><dd>{status}</dd></div>)}
+        </dl></details>}
     </div>;
 }
 

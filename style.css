@@ -114,6 +114,9 @@
 .ps-import input { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }
 .ps-import:has(input:disabled) { opacity: .5; }
 .ps-message:not(:empty) { margin: 8px 0 0; font-size: 13px; }
+.ps-apply-preview { margin-top: 12px; padding: 12px; border: 1px solid var(--ps-border); border-radius: 10px; background: var(--ps-panel); }
+.ps-apply-preview h3 { margin-bottom: 6px; font-size: 16px; font-weight: 700; }
+.ps-apply-preview p { color: var(--ps-muted); font-size: 13px; }
 .ps-empty { color: var(--ps-muted); padding: 8px 0; }
 
 @container (max-width: 430px) {

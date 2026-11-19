@@ -2,6 +2,18 @@ import { get, set, update } from "@api/DataStore";
 
 import { parsePreset, Preset } from "./snapshot";
 
+export async function saveRecovery(preset: Preset, restoring: boolean) {
+    await set(`ProfileStudio.recovery.${restoring ? "beforeRestore" : "previous"}.${preset.account}`, parsePreset(preset));
+}
+
+export async function loadRecovery(account: string) {
+    const value = await get<unknown>(`ProfileStudio.recovery.previous.${account}`);
+    if (value === undefined) return;
+    const preset = parsePreset(value);
+    if (preset.account !== account) throw new Error("The recovery snapshot belongs to another account.");
+    return preset;
+}
+
 const key = "ProfileStudio.library.v1";
 type Library = { version: 1; presets: Preset[]; previous: Preset[]; };
 
