@@ -5,6 +5,8 @@ import { test } from "node:test";
 import { executePlan, planApply } from "../apply.ts";
 // @ts-expect-error The Node test runner resolves this explicit source extension.
 import { fields, type Preset } from "../snapshot.ts";
+// @ts-expect-error The Node test runner resolves this explicit source extension.
+import { parseInventory } from "../collectibles.ts";
 
 function example(name: string, bio = ""): Preset {
     const profile = Object.fromEntries(fields.map(field => [field, { state: "unavailable" }])) as Preset["profile"];
@@ -20,8 +22,30 @@ test("builds a targeted plan and blocks account mismatches, unavailable fields a
     desired.profile.themeColors = { state: "present", value: [0, 42] };
     const plan = planApply(current, desired, false);
     assert.deepEqual(plan.operations.map(({ key }) => key), ["global_name", "bio"]);
-    assert.ok(plan.results.some(item => item.field === "profileEffect" && item.status === "Unsupported"));
+    assert.ok(plan.results.some(item => item.field === "profileEffect" && item.status === "Invalid or missing preset value"));
     assert.throws(() => planApply(current, { ...desired, account: "987654321098765432" }, false));
+});
+
+test("only equips owned, unexpired items of the matching cosmetic type", () => {
+    const current = example("Before");
+    const desired = example("Before");
+    const sku = "123456789012345678";
+    const other = "123456789012345679";
+    for (const field of ["avatarDecoration", "nameplate", "profileEffect", "profileFrame"] as const) {
+        current.profile[field] = { state: "unset" };
+        desired.profile[field] = { state: "present", value: { id: sku } };
+    }
+    const inventory = parseInventory([
+        { expires_at: null, items: [{ type: 0, sku_id: sku }, { type: 1, sku_id: sku }, { type: 2, sku_id: other }] },
+        { expires_at: "2020-01-01T00:00:00Z", items: [{ type: 2, sku_id: sku }] },
+    ]);
+    const plan = planApply(current, desired, true, inventory);
+    assert.deepEqual(plan.operations.map(({ key }) => key), ["avatar_decoration_sku_id", "profile_effect_id"]);
+    assert.ok(plan.results.some(item => item.field === "nameplate" && item.status === "Saved collectible is not available to this account"));
+    assert.ok(plan.results.some(item => item.field === "profileFrame" && item.status === "Unsupported"));
+    assert.equal(planApply(current, desired, true).operations.length, 0);
+    desired.profile.nameplate = { state: "present", value: { skuId: other } };
+    assert.ok(planApply(current, desired, true, inventory).operations.some(item => item.key === "nameplate_sku_id"));
 });
 
 test("keeps animated images intact and skips uploads without originals", () => {

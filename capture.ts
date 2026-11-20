@@ -1,5 +1,6 @@
 import { Constants, RestAPI, UserSettingsActionCreators, UserStore } from "@webpack/common";
 
+import { cosmeticTypes, parseInventory } from "./collectibles";
 import { captureField, Field, mediaPath, Preset, record, validMedia } from "./snapshot";
 
 async function download(account: string, key: "avatar" | "banner", field: Field, signal?: AbortSignal) {
@@ -37,6 +38,17 @@ async function download(account: string, key: "avatar" | "banner", field: Field,
 }
 
 const cosmeticKeys = ["asset", "sku_id", "skuId", "expires_at", "id", "type", "label", "palette"];
+
+export async function fetchInventory(account: string) {
+    try {
+        const endpoint = (Constants.Endpoints as unknown as Record<string, unknown>).COLLECTIBLES_PURCHASES;
+        if (typeof endpoint !== "string" || UserStore.getCurrentUser()?.id !== account) return;
+        const { body } = await RestAPI.get({ url: endpoint, oldFormErrors: true });
+        if (UserStore.getCurrentUser()?.id === account) return parseInventory(body);
+    } catch {
+        // An unavailable inventory must never authorize a collectible change.
+    }
+}
 
 function customStatus(): Field {
     try {
@@ -84,7 +96,23 @@ export async function capture(name: string, signal?: AbortSignal): Promise<Prese
     const readProfile = (key: string, keys?: readonly string[]): Field =>
         profileFailed ? { state: "failed" } : captureField(saved[key], keys);
     const collectibles = own("collectibles", current.collectibles);
-    const nameplate = collectibles === null ? null : record(collectibles).nameplate ?? current.nameplate;
+    const nameplate = collectibles === null ? null : Object.hasOwn(record(collectibles), "nameplate")
+        ? record(collectibles).nameplate : current.nameplate;
+    function profileCollectible(key: string, type: number) {
+        if (profileFailed) return { state: "failed" } as const;
+        if (Array.isArray(saved.collectibles)) {
+            const selected = saved.collectibles.find(item => record(item).type === type);
+            if (selected) return captureField(selected, cosmeticKeys);
+            if (Object.hasOwn(saved, key)) return readProfile(key, cosmeticKeys);
+            return captureField(saved.collectibles.every(item => typeof record(item).type === "number") ? null : undefined);
+        }
+        if (Object.hasOwn(saved, key)) return readProfile(key, cosmeticKeys);
+        const nested = record(saved.collectibles);
+        if (Object.hasOwn(nested, key)) return captureField(nested[key], cosmeticKeys);
+        const idKey = key === "profile_frame" ? "profile_frame_sku_id" : "profile_effect_id";
+        const id = saved[idKey];
+        return typeof id === "string" ? captureField({ id }) : captureField(id, cosmeticKeys);
+    }
     const profile: Preset["profile"] = {
         username: captureField(own("username", current.username)),
         displayName: captureField(own("global_name", current.globalName)),
@@ -97,8 +125,8 @@ export async function capture(name: string, signal?: AbortSignal): Promise<Prese
         themeColors: readProfile("theme_colors"),
         displayNameStyles: captureField(own("display_name_styles", current.displayNameStyles), ["font_id", "fontId", "effect_id", "effectId", "colors"]),
         avatarDecoration: captureField(own("avatar_decoration_data", current.avatarDecorationData), cosmeticKeys),
-        profileEffect: readProfile("profile_effect", cosmeticKeys),
-        profileFrame: readProfile("profile_frame", cosmeticKeys),
+        profileEffect: profileCollectible("profile_effect", cosmeticTypes.profileEffect),
+        profileFrame: profileCollectible("profile_frame", cosmeticTypes.profileFrame),
         nameplate: captureField(nameplate, cosmeticKeys),
         primaryGuild: captureField(own("primary_guild", current.primaryGuild), ["badge", "tag", "identityEnabled", "identityGuildId", "identity_enabled", "identity_guild_id"]),
         connectionVisibility: { state: "unavailable" },

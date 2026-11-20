@@ -1,3 +1,4 @@
+import { cosmeticTypes, equipped, type Inventory, isCosmetic } from "./collectibles";
 import { fields, type FieldName, type Preset, validMedia } from "./snapshot";
 
 const routes = {
@@ -7,6 +8,9 @@ const routes = {
     bio: ["profile", "bio", 190],
     pronouns: ["profile", "pronouns", 40],
     themeColors: ["profile", "theme_colors", 0],
+    avatarDecoration: ["account", "avatar_decoration_sku_id", 0],
+    nameplate: ["account", "nameplate_sku_id", 0],
+    profileEffect: ["profile", "profile_effect_id", 0],
 } as const;
 
 type Route = "account" | "profile";
@@ -20,6 +24,10 @@ export function sameField(left: Preset, right: Preset, field: FieldName) {
     const after = right.profile[field];
     if (before.state !== after.state) return false;
     if (before.state !== "present" || after.state !== "present") return true;
+    if (isCosmetic(field)) {
+        const id = equipped(left, field);
+        return id !== undefined && id === equipped(right, field);
+    }
     if (JSON.stringify(before.value) === JSON.stringify(after.value)) return true;
     if (field !== "avatar" && field !== "banner") return false;
     const media = left.media[field];
@@ -27,6 +35,7 @@ export function sameField(left: Preset, right: Preset, field: FieldName) {
 }
 
 function payload(preset: Preset, field: keyof typeof routes): Payload | undefined {
+    if (isCosmetic(field)) return equipped(preset, field);
     const entry = preset.profile[field];
     if (entry.state === "unset") return field === "bio" || field === "pronouns" ? "" : null;
     if (entry.state !== "present") return;
@@ -46,7 +55,7 @@ function payload(preset: Preset, field: keyof typeof routes): Payload | undefine
     if (typeof entry.value === "string" && entry.value.length <= routes[field][2]) return entry.value;
 }
 
-export function planApply(current: Preset, desired: Preset, fullNitro: boolean): Plan {
+export function planApply(current: Preset, desired: Preset, fullNitro: boolean, inventory?: Inventory): Plan {
     if (current.account !== desired.account) throw new Error("This preset belongs to another Discord account.");
     const operations: Operation[] = [];
     const results: Result[] = [];
@@ -62,6 +71,11 @@ export function planApply(current: Preset, desired: Preset, fullNitro: boolean):
         const recovery = payload(current, supported);
         if (value === undefined) { report("Invalid or missing preset value"); continue; }
         if (recovery === undefined) { report("Current value could not be backed up"); continue; }
+        if (isCosmetic(field)) {
+            if (!inventory) { report("Could not verify collectible ownership"); continue; }
+            if (value !== null && !inventory.has(`${cosmeticTypes[field]}:${value}`)) { report("Saved collectible is not available to this account"); continue; }
+            if (recovery !== null && !inventory.has(`${cosmeticTypes[field]}:${recovery}`)) { report("Current collectible could not be restored"); continue; }
+        }
         if (!fullNitro && (field === "banner" || field === "themeColors"
             || field === "avatar" && (desired.media.avatar?.type === "image/gif" || current.media.avatar?.type === "image/gif"))) {
             report("Full Nitro required"); continue;

@@ -3,7 +3,8 @@ import definePlugin from "@utils/types";
 import { Modal, openModal, RestAPI, UserStore, useEffect, useState } from "@webpack/common";
 
 import { executePlan, planApply, type Result } from "./apply";
-import { capture } from "./capture";
+import { capture, fetchInventory } from "./capture";
+import { isCosmetic } from "./collectibles";
 import { captureField, fields, missing, parsePreset, Preset } from "./snapshot";
 import { changeLibrary, listPresets, loadRecovery, recoverLibrary, saveRecovery } from "./storage";
 import "./style.css";
@@ -69,8 +70,8 @@ function ProfileLibrary() {
             const desired = restoring ? await loadRecovery(active.id) : preset;
             if (!desired) throw new Error(restoring ? "There is no previous profile to restore." : "Select a preset first.");
             if (desired.account !== active.id) throw new Error("This preset belongs to another Discord account.");
-            const current = await capture("Previous profile");
-            const plan = planApply(current, desired, active.premiumType === 2);
+            const [current, inventory] = await Promise.all([capture("Previous profile"), fetchInventory(active.id)]);
+            const plan = planApply(current, desired, active.premiumType === 2, inventory);
             setPending({ current, desired, restoring, plan });
         }, "");
     }
@@ -82,6 +83,13 @@ function ProfileLibrary() {
         try {
             await run(async () => {
                 const { current, desired, restoring, plan } = pending;
+                if (plan.operations.some(({ field }) => isCosmetic(field))) {
+                    const inventory = await fetchInventory(desired.account);
+                    const checked = planApply(current, desired, UserStore.getCurrentUser()?.premiumType === 2, inventory);
+                    if (JSON.stringify(checked.operations) !== JSON.stringify(plan.operations)) {
+                        throw new Error("Collectible availability changed. Open Apply or Restore again.");
+                    }
+                }
                 const outcome = await executePlan(current, desired, plan, {
                     currentAccount: () => UserStore.getCurrentUser()?.id,
                     backup: snapshot => saveRecovery(snapshot, restoring),
