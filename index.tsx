@@ -1,10 +1,12 @@
+import { getUserSetting } from "@api/UserSettings";
 import ErrorBoundary from "@components/ErrorBoundary";
 import definePlugin from "@utils/types";
-import { Modal, openModal, RestAPI, UserStore, useEffect, useState } from "@webpack/common";
+import { EmojiStore, GuildStore, Modal, openModal, RestAPI, UserStore, useEffect, useState } from "@webpack/common";
 
 import { executePlan, planApply, profileCollectibleRequest, type Result } from "./apply";
 import { capture, fetchInventory } from "./capture";
 import { type CapturedProfile, isCosmetic } from "./collectibles";
+import { accountIdentityBody, type CustomStatus, statusSetting } from "./identity";
 import { captureField, fields, missing, parsePreset, Preset } from "./snapshot";
 import { changeLibrary, listPresets, loadRecovery, recoverLibrary, saveRecovery } from "./storage";
 import "./style.css";
@@ -19,6 +21,17 @@ function downloadPreset(preset: Preset) {
 }
 
 let applying = false;
+
+function identityChecks() {
+    return {
+        customStatusAvailable: !!getUserSetting("status", "customStatus"),
+        canUseEmoji: (id: string) => !!EmojiStore?.getUsableCustomEmojiById?.(id),
+        canUseGuild: (id: string) => {
+            const guild = GuildStore?.getGuild?.(id);
+            return !!guild && (guild.features.has("GUILD_TAGS") || guild.features.has("CLAN"));
+        },
+    };
+}
 
 function ProfileLibrary() {
     const [list, setList] = useState<Preset[]>([]);
@@ -71,7 +84,7 @@ function ProfileLibrary() {
             if (!desired) throw new Error(restoring ? "There is no previous profile to restore." : "Select a preset first.");
             if (desired.account !== active.id) throw new Error("This preset belongs to another Discord account.");
             const [current, inventory] = await Promise.all([capture("Previous profile"), fetchInventory(active.id)]);
-            const plan = planApply(current, desired, active.premiumType === 2, inventory);
+            const plan = planApply(current, desired, active.premiumType === 2, inventory, identityChecks());
             setPending({ current, desired, restoring, plan });
         }, "");
     }
@@ -83,12 +96,10 @@ function ProfileLibrary() {
         try {
             await run(async () => {
                 const { current, desired, restoring, plan } = pending;
-                if (plan.operations.some(({ field }) => isCosmetic(field))) {
-                    const inventory = await fetchInventory(desired.account);
-                    const checked = planApply(current, desired, UserStore.getCurrentUser()?.premiumType === 2, inventory);
-                    if (JSON.stringify(checked.operations) !== JSON.stringify(plan.operations)) {
-                        throw new Error("Collectible availability changed. Open Apply or Restore again.");
-                    }
+                const inventory = plan.operations.some(({ field }) => isCosmetic(field)) ? await fetchInventory(desired.account) : undefined;
+                const checked = planApply(current, desired, UserStore.getCurrentUser()?.premiumType === 2, inventory, identityChecks());
+                if (plan.operations.some(operation => !checked.operations.some(item => JSON.stringify(item) === JSON.stringify(operation)))) {
+                    throw new Error("Profile eligibility changed. Open Apply or Restore again.");
                 }
                 let equippedItems = current.profileCollectibles;
                 const outcome = await executePlan(current, desired, plan, {
@@ -101,11 +112,17 @@ function ProfileLibrary() {
                     },
                     write: async operation => {
                         if (UserStore.getCurrentUser()?.id !== desired.account) throw new Error("The active Discord account changed.");
-                        const { route, key, value } = operation;
+                        const { field, route, key, value } = operation;
+                        if (route === "status") {
+                            const setting = getUserSetting<ReturnType<typeof statusSetting>>("status", "customStatus");
+                            if (!setting) throw new Error("Custom status settings unavailable.");
+                            await setting.updateSetting(statusSetting(value as CustomStatus | null));
+                            return;
+                        }
                         const collectible = profileCollectibleRequest(operation, equippedItems);
                         await RestAPI.patch({
                             url: route === "account" ? "/users/@me" : "/users/@me/profile",
-                            body: collectible?.body ?? { [key]: value },
+                            body: collectible?.body ?? accountIdentityBody(field, value) ?? { [key]: value },
                             oldFormErrors: true,
                         });
                         if (collectible) equippedItems = collectible.items;
@@ -289,7 +306,8 @@ function ProfileLibrary() {
                     field,
                     status: value === null || value === "" ? "Clear"
                         : typeof value === "string" && value.startsWith("data:image/") ? "Replace with saved image"
-                            : Array.isArray(value) ? value.map(hexColor).join(", ") : value,
+                            : Array.isArray(value) ? value.map(hexColor).join(", ")
+                                : typeof value === "object" ? "Use saved settings" : value,
                 })),
                 ...pending.plan.results,
             ].map(({ field, status }) => <div key={field}><dt>{label(field)}</dt><dd>{status}</dd></div>)}</dl>
@@ -327,6 +345,7 @@ export default definePlugin({
     name: "ProfileStudio",
     description: "Save, preview and manage local Discord profile presets.",
     authors: [{ name: "Profile Studio", id: 0n }],
+    dependencies: ["UserSettingsAPI"],
     toolboxActions: { "Open Profile Studio": openLibrary },
     patches: [
         {

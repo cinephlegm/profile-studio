@@ -55,15 +55,16 @@ function customStatus(): Field {
         const status = record(UserSettingsActionCreators.PreloadedUserSettingsActionCreators.getCurrentValue()).status;
         if (!status || typeof status !== "object") return { state: "unavailable" };
         const value = record(status).customStatus;
-        if (value === undefined) return { state: "unset" };
+        if (value == null) return { state: "unset" };
         const { text, emojiId, emojiName, expiresAtMs } = record(value);
         const normalized = {
             ...(typeof text === "string" && { text }),
-            ...(typeof emojiId === "string" && { emojiId }),
+            ...(typeof emojiId === "string" || typeof emojiId === "bigint" ? { emojiId: String(emojiId) } : {}),
             ...(typeof emojiName === "string" && { emojiName }),
             ...(typeof expiresAtMs === "bigint" || typeof expiresAtMs === "string" || typeof expiresAtMs === "number"
                 ? { expiresAtMs: String(expiresAtMs) } : {})
         };
+        if (Object.hasOwn(normalized, "text") && !normalized.text && !normalized.emojiName && (!normalized.emojiId || normalized.emojiId === "0")) return { state: "unset" };
         return Object.keys(normalized).length ? captureField(normalized) : captureField(value, []);
     } catch {
         return { state: "failed" };

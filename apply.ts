@@ -1,4 +1,5 @@
 import { type CapturedProfile, cosmeticTypes, equipped, type Inventory, isCosmetic, type ProfileCollectible, replaceProfileCollectible } from "./collectibles";
+import { clanId, type CustomStatus, displayStyle, type DisplayStyle, statusValue } from "./identity";
 import { fields, type FieldName, type Preset, validMedia } from "./snapshot";
 
 const routes = {
@@ -12,13 +13,21 @@ const routes = {
     nameplate: ["account", "nameplate_sku_id", 0],
     profileEffect: ["profile", "collectibles_sku_ids", 0],
     profileFrame: ["profile", "collectibles_sku_ids", 0],
+    displayNameStyles: ["account", "display_name_styles", 0],
+    primaryGuild: ["account", "primary_guild_id", 0],
+    customStatus: ["status", "customStatus", 0],
 } as const;
 
-type Route = "account" | "profile";
-type Payload = string | null | number[];
+type Route = "account" | "profile" | "status";
+type Payload = string | null | number[] | DisplayStyle | CustomStatus;
 export type Result = { field: FieldName; status: string; };
 type Operation = { field: FieldName; route: Route; key: string; value: Payload; };
 type Plan = { operations: Operation[]; results: Result[]; };
+type IdentityChecks = {
+    canUseGuild(id: string): boolean;
+    canUseEmoji(id: string): boolean;
+    customStatusAvailable: boolean;
+};
 
 export function profileCollectibleRequest(operation: Operation, equippedItems: ProfileCollectible[] | undefined) {
     const { field, value } = operation;
@@ -31,6 +40,12 @@ export function profileCollectibleRequest(operation: Operation, equippedItems: P
 export function sameField(left: Preset, right: Preset, field: FieldName) {
     const before = left.profile[field];
     const after = right.profile[field];
+    if (field === "displayNameStyles" || field === "customStatus" || field === "primaryGuild") {
+        const normalize = field === "displayNameStyles" ? displayStyle : field === "customStatus" ? statusValue : clanId;
+        const a = before.state === "present" ? normalize(before.value) : before.state === "unset" ? null : undefined;
+        const b = after.state === "present" ? normalize(after.value) : after.state === "unset" ? null : undefined;
+        return a !== undefined && JSON.stringify(a) === JSON.stringify(b);
+    }
     if (before.state !== after.state) return false;
     if (before.state !== "present" || after.state !== "present") return true;
     if (isCosmetic(field)) {
@@ -48,6 +63,9 @@ function payload(preset: Preset, field: keyof typeof routes): Payload | undefine
     const entry = preset.profile[field];
     if (entry.state === "unset") return field === "bio" || field === "pronouns" ? "" : null;
     if (entry.state !== "present") return;
+    if (field === "displayNameStyles") return displayStyle(entry.value);
+    if (field === "primaryGuild") return clanId(entry.value);
+    if (field === "customStatus") return statusValue(entry.value);
     if (field === "avatar" || field === "banner") {
         const asset = preset.media[field];
         if (!validMedia(asset) || asset.data.length > 13_333_332 || typeof entry.value !== "string"
@@ -64,7 +82,7 @@ function payload(preset: Preset, field: keyof typeof routes): Payload | undefine
     if (typeof entry.value === "string" && entry.value.length <= routes[field][2]) return entry.value;
 }
 
-export function planApply(current: CapturedProfile, desired: Preset, fullNitro: boolean, inventory?: Inventory): Plan {
+export function planApply(current: CapturedProfile, desired: Preset, fullNitro: boolean, inventory?: Inventory, identity?: IdentityChecks): Plan {
     if (current.account !== desired.account) throw new Error("This preset belongs to another Discord account.");
     const operations: Operation[] = [];
     const results: Result[] = [];
@@ -80,6 +98,19 @@ export function planApply(current: CapturedProfile, desired: Preset, fullNitro: 
         const recovery = payload(current, supported);
         if (value === undefined) { report("Invalid or missing preset value"); continue; }
         if (recovery === undefined) { report("Current value could not be backed up"); continue; }
+        if (field === "primaryGuild" && [value, recovery].some(id => typeof id === "string" && !identity?.canUseGuild(id))) {
+            report("Clan tag eligibility could not be verified"); continue;
+        }
+        if (field === "customStatus") {
+            if (!identity?.customStatusAvailable) { report("Custom status settings unavailable"); continue; }
+            const statuses = [value, recovery].filter((item): item is CustomStatus => !!item && typeof item === "object" && "emojiId" in item);
+            if (statuses.some(status => status.expiresAtMs !== "0" && Number(status.expiresAtMs) <= Date.now())) {
+                report("A custom status has expired"); continue;
+            }
+            if (statuses.some(status => status.emojiId !== "0" && !identity.canUseEmoji(status.emojiId))) {
+                report("Custom status emoji availability could not be verified"); continue;
+            }
+        }
         if (isCosmetic(field)) {
             if (!inventory) { report("Could not verify collectible ownership"); continue; }
             if (value !== null && !inventory.has(`${cosmeticTypes[field]}:${value}`)) { report("Saved collectible is not available to this account"); continue; }
@@ -88,7 +119,7 @@ export function planApply(current: CapturedProfile, desired: Preset, fullNitro: 
         if ((field === "profileFrame" || field === "profileEffect") && !current.profileCollectibles) {
             report("Equipped profile collectibles could not be verified"); continue;
         }
-        if (!fullNitro && (field === "banner" || field === "themeColors"
+        if (!fullNitro && (field === "banner" || field === "themeColors" || field === "displayNameStyles"
             || field === "avatar" && (desired.media.avatar?.type === "image/gif" || current.media.avatar?.type === "image/gif"))) {
             report("Full Nitro required"); continue;
         }
@@ -144,7 +175,7 @@ export async function executePlan(current: Preset, desired: Preset, plan: Plan, 
         }
         for (const { field } of accepted) {
             const matched = verified?.account === desired.account && sameField(desired, verified, field);
-            results.push({ field, status: matched ? "Applied and verified" : "Not verified" });
+            results.push({ field, status: matched ? field === "customStatus" ? "Matches client settings; server sync unverified" : "Applied and verified" : "Not verified" });
         }
     }
     return results;

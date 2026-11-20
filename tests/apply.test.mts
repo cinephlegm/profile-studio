@@ -7,6 +7,8 @@ import { executePlan, planApply, profileCollectibleRequest } from "../apply.ts";
 import { fields, type Preset } from "../snapshot.ts";
 // @ts-expect-error The Node test runner resolves this explicit source extension.
 import { type CapturedProfile, parseInventory } from "../collectibles.ts";
+// @ts-expect-error The Node test runner resolves this explicit source extension.
+import { accountIdentityBody, statusSetting, type CustomStatus } from "../identity.ts";
 
 function example(name: string, bio = ""): CapturedProfile {
     const profile = Object.fromEntries(fields.map(field => [field, { state: "unavailable" }])) as Preset["profile"];
@@ -164,4 +166,63 @@ test("an accepted request with mismatched readback stays unverified", async () =
         write: async () => {},
     });
     assert.ok(results.some(item => item.field === "displayName" && item.status === "Not verified"));
+});
+
+test("applies and restores display-name styles, status, and clan tag using targeted writes", async () => {
+    const oldGuild = "123456789012345679";
+    const newGuild = "123456789012345680";
+    const emoji = "123456789012345681";
+    const expiry = String(Date.now() + 60_000);
+    const before = example("Same");
+    before.profile.primaryGuild = { state: "present", value: { identity_enabled: true, identity_guild_id: oldGuild } };
+    before.profile.displayNameStyles = { state: "unset" };
+    before.profile.customStatus = { state: "unset" };
+    const desired = structuredClone(before);
+    desired.profile.primaryGuild = { state: "present", value: { identityEnabled: true, identityGuildId: newGuild } };
+    desired.profile.displayNameStyles = { state: "present", value: { font_id: 1, effect_id: 2, colors: [0, 42] } };
+    desired.profile.customStatus = { state: "present", value: { text: "Available", emojiId: emoji, emojiName: "leaf", expiresAtMs: expiry } };
+    const checks = { canUseGuild: (id: string) => [oldGuild, newGuild].includes(id), canUseEmoji: (id: string) => id === emoji, customStatusAvailable: true };
+    let live = structuredClone(before);
+    const writes: unknown[] = [];
+    let backup: Preset | undefined;
+    let target = desired;
+    const io = {
+        currentAccount: () => live.account,
+        backup: async (preset: Preset) => { backup = structuredClone(preset); },
+        read: async () => live,
+        write: async (op: ReturnType<typeof planApply>["operations"][number]) => {
+            assert.ok(backup);
+            writes.push(op.route === "status" ? statusSetting(op.value as CustomStatus | null, 1)
+                : accountIdentityBody(op.field, op.value) ?? { [op.key]: op.value });
+            live = { ...live, profile: { ...live.profile, [op.field]: target.profile[op.field] } };
+        },
+    };
+    const outcomes = await executePlan(live, desired, planApply(live, desired, true, undefined, checks), io);
+    assert.ok(outcomes.some(item => item.field === "customStatus" && item.status.includes("server sync unverified")));
+    assert.deepEqual(live.profile, desired.profile);
+    target = backup as CapturedProfile;
+    await executePlan(live, target, planApply(live, target, true, undefined, checks), io);
+    assert.deepEqual(live.profile, before.profile);
+    assert.deepEqual(writes, [
+        { text: "Available", emojiId: emoji, emojiName: "leaf", expiresAtMs: expiry, createdAtMs: "1" },
+        { display_name_font_id: 1, display_name_effect_id: 2, display_name_colors: [0, 42] },
+        { primary_guild_id: newGuild },
+        undefined,
+        { display_name_font_id: null, display_name_effect_id: null, display_name_colors: null },
+        { primary_guild_id: oldGuild },
+    ]);
+});
+
+test("checks clan and style eligibility and skips expired status without changing it", () => {
+    const current = example("Same");
+    current.profile.primaryGuild = current.profile.customStatus = current.profile.displayNameStyles = { state: "unset" };
+    const desired = structuredClone(current);
+    desired.profile.primaryGuild = { state: "present", value: { identityEnabled: true, identityGuildId: "123456789012345679" } };
+    desired.profile.displayNameStyles = { state: "present", value: { fontId: 1, effectId: 2, colors: [42] } };
+    desired.profile.customStatus = { state: "present", value: { text: "Expired", expiresAtMs: "123" } };
+    const plan = planApply(current, desired, false, undefined, { canUseGuild: () => false, canUseEmoji: () => false, customStatusAvailable: true });
+    assert.equal(plan.operations.length, 0);
+    assert.ok(plan.results.some(item => item.field === "customStatus" && item.status.includes("expired")));
+    assert.ok(plan.results.some(item => item.field === "displayNameStyles" && item.status === "Full Nitro required"));
+    assert.ok(plan.results.some(item => item.field === "primaryGuild" && item.status.includes("eligibility")));
 });
