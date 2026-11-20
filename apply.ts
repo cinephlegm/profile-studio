@@ -1,4 +1,4 @@
-import { cosmeticTypes, equipped, type Inventory, isCosmetic } from "./collectibles";
+import { type CapturedProfile, cosmeticTypes, equipped, type Inventory, isCosmetic, type ProfileCollectible, replaceProfileCollectible } from "./collectibles";
 import { fields, type FieldName, type Preset, validMedia } from "./snapshot";
 
 const routes = {
@@ -10,7 +10,8 @@ const routes = {
     themeColors: ["profile", "theme_colors", 0],
     avatarDecoration: ["account", "avatar_decoration_sku_id", 0],
     nameplate: ["account", "nameplate_sku_id", 0],
-    profileEffect: ["profile", "profile_effect_id", 0],
+    profileEffect: ["profile", "collectibles_sku_ids", 0],
+    profileFrame: ["profile", "collectibles_sku_ids", 0],
 } as const;
 
 type Route = "account" | "profile";
@@ -18,6 +19,14 @@ type Payload = string | null | number[];
 export type Result = { field: FieldName; status: string; };
 type Operation = { field: FieldName; route: Route; key: string; value: Payload; };
 type Plan = { operations: Operation[]; results: Result[]; };
+
+export function profileCollectibleRequest(operation: Operation, equippedItems: ProfileCollectible[] | undefined) {
+    const { field, value } = operation;
+    if (field !== "profileEffect" && field !== "profileFrame") return;
+    if (!equippedItems || (value !== null && typeof value !== "string")) throw new Error("The equipped profile collectibles could not be verified.");
+    const items = replaceProfileCollectible(equippedItems, field, value);
+    return { items, body: { collectibles_sku_ids: items.map(item => item.sku_id) } };
+}
 
 export function sameField(left: Preset, right: Preset, field: FieldName) {
     const before = left.profile[field];
@@ -55,7 +64,7 @@ function payload(preset: Preset, field: keyof typeof routes): Payload | undefine
     if (typeof entry.value === "string" && entry.value.length <= routes[field][2]) return entry.value;
 }
 
-export function planApply(current: Preset, desired: Preset, fullNitro: boolean, inventory?: Inventory): Plan {
+export function planApply(current: CapturedProfile, desired: Preset, fullNitro: boolean, inventory?: Inventory): Plan {
     if (current.account !== desired.account) throw new Error("This preset belongs to another Discord account.");
     const operations: Operation[] = [];
     const results: Result[] = [];
@@ -75,6 +84,9 @@ export function planApply(current: Preset, desired: Preset, fullNitro: boolean, 
             if (!inventory) { report("Could not verify collectible ownership"); continue; }
             if (value !== null && !inventory.has(`${cosmeticTypes[field]}:${value}`)) { report("Saved collectible is not available to this account"); continue; }
             if (recovery !== null && !inventory.has(`${cosmeticTypes[field]}:${recovery}`)) { report("Current collectible could not be restored"); continue; }
+        }
+        if ((field === "profileFrame" || field === "profileEffect") && !current.profileCollectibles) {
+            report("Equipped profile collectibles could not be verified"); continue;
         }
         if (!fullNitro && (field === "banner" || field === "themeColors"
             || field === "avatar" && (desired.media.avatar?.type === "image/gif" || current.media.avatar?.type === "image/gif"))) {

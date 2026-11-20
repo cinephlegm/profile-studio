@@ -9,6 +9,28 @@ export const cosmeticTypes = {
 
 export type Cosmetic = keyof typeof cosmeticTypes;
 export type Inventory = ReadonlySet<string>;
+export type ProfileCollectible = { type: number; sku_id: string; };
+export type CapturedProfile = Preset & { profileCollectibles?: ProfileCollectible[]; };
+
+export function readProfileCollectibles(value: unknown): ProfileCollectible[] | undefined {
+    if (value === null) return [];
+    if (!Array.isArray(value)) return;
+    const items: ProfileCollectible[] = [];
+    for (const item of value) {
+        const { type } = record(item);
+        const id = collectibleId(item);
+        if (!id || typeof type !== "number" || !Number.isInteger(type)) return;
+        items.push({ type, sku_id: id });
+    }
+    return items;
+}
+
+export function replaceProfileCollectible(items: readonly ProfileCollectible[], field: "profileEffect" | "profileFrame", sku: string | null) {
+    const type = cosmeticTypes[field];
+    const next = items.filter(item => item.type !== type);
+    if (sku !== null) next.push({ type, sku_id: sku });
+    return next;
+}
 
 export function isCosmetic(field: FieldName): field is Cosmetic {
     return Object.hasOwn(cosmeticTypes, field);

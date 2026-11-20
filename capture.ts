@@ -1,6 +1,6 @@
 import { Constants, RestAPI, UserSettingsActionCreators, UserStore } from "@webpack/common";
 
-import { cosmeticTypes, parseInventory } from "./collectibles";
+import { type CapturedProfile, cosmeticTypes, parseInventory, readProfileCollectibles } from "./collectibles";
 import { captureField, Field, mediaPath, Preset, record, validMedia } from "./snapshot";
 
 async function download(account: string, key: "avatar" | "banner", field: Field, signal?: AbortSignal) {
@@ -70,7 +70,7 @@ function customStatus(): Field {
     }
 }
 
-export async function capture(name: string, signal?: AbortSignal): Promise<Preset> {
+export async function capture(name: string, signal?: AbortSignal): Promise<CapturedProfile> {
     const current = UserStore.getCurrentUser();
     if (!current?.id) throw new Error("Sign in to Discord before capturing a preset.");
     const account = current.id;
@@ -93,6 +93,7 @@ export async function capture(name: string, signal?: AbortSignal): Promise<Prese
     const source = record(response.user);
     const own = (key: string, fallback: unknown) => Object.hasOwn(source, key) ? source[key] : fallback;
     const saved = record(response.user_profile);
+    const profileCollectibles = readProfileCollectibles(saved.collectibles);
     const readProfile = (key: string, keys?: readonly string[]): Field =>
         profileFailed ? { state: "failed" } : captureField(saved[key], keys);
     const collectibles = own("collectibles", current.collectibles);
@@ -107,6 +108,7 @@ export async function capture(name: string, signal?: AbortSignal): Promise<Prese
             return captureField(saved.collectibles.every(item => typeof record(item).type === "number") ? null : undefined);
         }
         if (Object.hasOwn(saved, key)) return readProfile(key, cosmeticKeys);
+        if (saved.collectibles === null) return captureField(null);
         const nested = record(saved.collectibles);
         if (Object.hasOwn(nested, key)) return captureField(nested[key], cosmeticKeys);
         const idKey = key === "profile_frame" ? "profile_frame_sku_id" : "profile_effect_id";
@@ -140,6 +142,7 @@ export async function capture(name: string, signal?: AbortSignal): Promise<Prese
     return {
         version: 1, id: crypto.randomUUID(), account, name,
         created: started, updated: started, profile,
+        profileCollectibles,
         media: { ...(avatar && { avatar }), ...(banner && { banner }) }
     };
 }

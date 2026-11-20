@@ -2,17 +2,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 // @ts-expect-error The Node test runner resolves this explicit source extension.
-import { executePlan, planApply } from "../apply.ts";
+import { executePlan, planApply, profileCollectibleRequest } from "../apply.ts";
 // @ts-expect-error The Node test runner resolves this explicit source extension.
 import { fields, type Preset } from "../snapshot.ts";
 // @ts-expect-error The Node test runner resolves this explicit source extension.
-import { parseInventory } from "../collectibles.ts";
+import { type CapturedProfile, parseInventory } from "../collectibles.ts";
 
-function example(name: string, bio = ""): Preset {
+function example(name: string, bio = ""): CapturedProfile {
     const profile = Object.fromEntries(fields.map(field => [field, { state: "unavailable" }])) as Preset["profile"];
     profile.displayName = { state: "present", value: name };
     profile.bio = bio ? { state: "present", value: bio } : { state: "unset" };
-    return { version: 1, id: "b533ae5c-743d-4cc5-ac8f-ec9e3725d552", account: "123456789012345678", name, created: 1, updated: 1, profile, media: {} };
+    return { version: 1, id: "b533ae5c-743d-4cc5-ac8f-ec9e3725d552", account: "123456789012345678", name, created: 1, updated: 1, profile, media: {}, profileCollectibles: [] };
 }
 
 test("builds a targeted plan and blocks account mismatches, unavailable fields and cosmetics", () => {
@@ -40,12 +40,61 @@ test("only equips owned, unexpired items of the matching cosmetic type", () => {
         { expires_at: "2020-01-01T00:00:00Z", items: [{ type: 2, sku_id: sku }] },
     ]);
     const plan = planApply(current, desired, true, inventory);
-    assert.deepEqual(plan.operations.map(({ key }) => key), ["avatar_decoration_sku_id", "profile_effect_id"]);
+    assert.deepEqual(plan.operations.map(({ key }) => key), ["avatar_decoration_sku_id", "collectibles_sku_ids"]);
     assert.ok(plan.results.some(item => item.field === "nameplate" && item.status === "Saved collectible is not available to this account"));
-    assert.ok(plan.results.some(item => item.field === "profileFrame" && item.status === "Unsupported"));
+    assert.ok(plan.results.some(item => item.field === "profileFrame" && item.status === "Saved collectible is not available to this account"));
     assert.equal(planApply(current, desired, true).operations.length, 0);
     desired.profile.nameplate = { state: "present", value: { skuId: other } };
     assert.ok(planApply(current, desired, true, inventory).operations.some(item => item.key === "nameplate_sku_id"));
+});
+
+test("applies an owned frame without touching the effect and restores an explicitly empty frame", async () => {
+    const sku = "123456789012345678";
+    const effect = "123456789012345679";
+    const other = "123456789012345680";
+    const before = example("Same");
+    before.profile.profileFrame = { state: "unset" };
+    before.profile.profileEffect = { state: "present", value: { skuId: effect } };
+    before.profileCollectibles = [{ type: 1, sku_id: effect }, { type: 99, sku_id: other }];
+    const framed = structuredClone(before);
+    framed.profile.profileFrame = { state: "present", value: { sku_id: sku, type: 3 } };
+    const inventory = parseInventory([{ items: [{ type: 3, sku_id: sku }] }]);
+    let live = before;
+    let recovery: Preset | undefined;
+    const writes: unknown[] = [];
+    const io = {
+        currentAccount: () => live.account,
+        backup: async (snapshot: Preset) => { recovery = snapshot; },
+        read: async () => live,
+        write: async (operation: ReturnType<typeof planApply>["operations"][number]) => {
+            assert.equal(recovery, live);
+            const request = profileCollectibleRequest(operation, live.profileCollectibles)!;
+            writes.push(request.body);
+            live = { ...(operation.value === null ? before : framed), profileCollectibles: request.items };
+        },
+    };
+    const apply = await executePlan(live, framed, planApply(live, framed, true, inventory), io);
+    assert.ok(apply.some(item => item.field === "profileFrame" && item.status === "Applied and verified"));
+    assert.equal(recovery, before);
+    const desired = recovery!;
+    const restore = await executePlan(live, desired, planApply(live, desired, true, inventory), io);
+    assert.ok(restore.some(item => item.field === "profileFrame" && item.status === "Applied and verified"));
+    assert.deepEqual(writes, [
+        { collectibles_sku_ids: [effect, other, sku] },
+        { collectibles_sku_ids: [effect, other] },
+    ]);
+    assert.deepEqual(live.profile.profileEffect, framed.profile.profileEffect);
+});
+
+test("old presets without captured frames and frames missing from inventory never write", () => {
+    const before = example("Same");
+    before.profile.profileFrame = { state: "unset" };
+    const desired = example("Same");
+    assert.equal(planApply(before, desired, true, new Set()).operations.length, 0);
+    desired.profile.profileFrame = { state: "present", value: { sku_id: "123456789012345678" } };
+    const plan = planApply(before, desired, true, new Set());
+    assert.equal(plan.operations.length, 0);
+    assert.ok(plan.results.some(item => item.field === "profileFrame" && item.status === "Saved collectible is not available to this account"));
 });
 
 test("keeps animated images intact and skips uploads without originals", () => {

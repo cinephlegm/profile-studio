@@ -14,6 +14,6 @@ Click the **Profile presets** icon in Discord's bottom-left account panel. Enter
 
 Click **Apply Preset**, review the changes, and confirm. Profile Studio saves a local recovery snapshot before sending any changes to Discord. Use **Restore Previous Profile** to review and reapply that snapshot.
 
-Apply and restore support display name, bio, pronouns, avatar, banner, theme colors, avatar decoration, nameplate, and profile effect. Collectibles are skipped if ownership cannot be verified. Some appearance changes require full Nitro. Profile frames, display-name styles, custom status, and guild tags are capture-only.
+Apply and restore support display name, bio, pronouns, avatar, banner, theme colors, avatar decoration, nameplate, profile effect, and profile frame. Collectibles are skipped if ownership cannot be verified. Some appearance changes require full Nitro. Display-name styles, custom status, and guild tags are capture-only.
 
-A preset marked **Partial capture** lists fields or images that could not be saved. Check the per-field results after applying.
+A preset marked **Partial capture** lists fields or images that could not be saved. An older preset that shows its frame as unavailable leaves the current frame alone. Check the per-field results after applying.

@@ -2,9 +2,9 @@ import ErrorBoundary from "@components/ErrorBoundary";
 import definePlugin from "@utils/types";
 import { Modal, openModal, RestAPI, UserStore, useEffect, useState } from "@webpack/common";
 
-import { executePlan, planApply, type Result } from "./apply";
+import { executePlan, planApply, profileCollectibleRequest, type Result } from "./apply";
 import { capture, fetchInventory } from "./capture";
-import { isCosmetic } from "./collectibles";
+import { type CapturedProfile, isCosmetic } from "./collectibles";
 import { captureField, fields, missing, parsePreset, Preset } from "./snapshot";
 import { changeLibrary, listPresets, loadRecovery, recoverLibrary, saveRecovery } from "./storage";
 import "./style.css";
@@ -31,7 +31,7 @@ function ProfileLibrary() {
     const [busy, setBusy] = useState(false);
     const [message, setMessage] = useState("");
     const [results, setResults] = useState<Result[]>([]);
-    const [pending, setPending] = useState<{ current: Preset; desired: Preset; restoring: boolean; plan: ReturnType<typeof planApply>; }>();
+    const [pending, setPending] = useState<{ current: CapturedProfile; desired: Preset; restoring: boolean; plan: ReturnType<typeof planApply>; }>();
     const account = UserStore.getCurrentUser()?.id;
     const library = list.filter(preset => preset.account === account);
     const preset = library.find(item => item.id === selected) ?? library[0];
@@ -90,17 +90,25 @@ function ProfileLibrary() {
                         throw new Error("Collectible availability changed. Open Apply or Restore again.");
                     }
                 }
+                let equippedItems = current.profileCollectibles;
                 const outcome = await executePlan(current, desired, plan, {
                     currentAccount: () => UserStore.getCurrentUser()?.id,
                     backup: snapshot => saveRecovery(snapshot, restoring),
-                    read: () => capture("Profile verification"),
-                    write: async ({ route, key, value }) => {
+                    read: async () => {
+                        const snapshot = await capture("Profile verification");
+                        equippedItems = snapshot.profileCollectibles;
+                        return snapshot;
+                    },
+                    write: async operation => {
                         if (UserStore.getCurrentUser()?.id !== desired.account) throw new Error("The active Discord account changed.");
+                        const { route, key, value } = operation;
+                        const collectible = profileCollectibleRequest(operation, equippedItems);
                         await RestAPI.patch({
                             url: route === "account" ? "/users/@me" : "/users/@me/profile",
-                            body: { [key]: value },
+                            body: collectible?.body ?? { [key]: value },
                             oldFormErrors: true,
                         });
+                        if (collectible) equippedItems = collectible.items;
                     },
                 });
                 setResults(outcome);
